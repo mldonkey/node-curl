@@ -1,0 +1,100 @@
+name: Build win
+on:
+  workflow_dispatch:
+
+jobs:
+  msys2-ucrt64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: git patch zip mingw-w64-ucrt-x86_64-make mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-go
+      - name: CI-Build
+        run: |
+          #download
+          rm -rf curl*
+          git clone https://github.com/mldonkey/node-curl
+          git clone https://github.com/lwthiker/curl-impersonate
+          cd curl*
+          dir=$(pwd)
+          git checkout v0.5.3
+          mkdir build
+          cd build
+          build=$(pwd)
+          git clone https://github.com/curl/curl
+          cd curl
+          git checkout curl-7_84_0
+          cd $build
+          git clone https://github.com/google/boringssl
+          cd boringssl
+          git checkout 3a667d10e94186fd503966f5638e134fe9fb4080
+
+
+          #patch curl
+          cd $build/curl
+          patch -p1 < $dir/../node-curl/curl-impersonate.patch
+          sed -i 's/-shared/-s -static -shared/g' lib/Makefile.m32
+          sed -i 's/-static/-s -static/g' src/Makefile.m32
+
+          sed -i 's/-DUSE_NGHTTP2/-DUSE_NGHTTP2 -DNGHTTP2_STATICLIB/g' lib/Makefile.m32
+          sed -i 's/-DUSE_NGHTTP2/-DUSE_NGHTTP2 -DNGHTTP2_STATICLIB/g' src/Makefile.m32
+
+          sed -i 's/-lidn2/-lidn2 -lunistring -liconv/g' lib/Makefile.m32
+          sed -i 's/-lidn2/-lidn2 -lunistring -liconv/g' src/Makefile.m32
+
+          #patch boringssl
+          cd $build/boringssl
+          patch -p1 < $dir/chrome/patches/boringssl-old-ciphers.patch
+          sed -i 's/-ggdb//g' CMakeLists.txt
+          sed -i 's/-Werror//g' CMakeLists.txt
+
+          #build
+          cd $build/boringssl
+          rm -rf lib
+          cmake.exe -G "Ninja" -S . -B lib -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc.exe
+          ninja -C lib crypto ssl
+          mv lib/crypto/libcrypto.a lib/libcrypto.a
+          mv lib/ssl/libssl.a lib/libssl.a
+
+          export IPV6=1
+
+          export ZLIB=1
+          export ZLIB_PATH=zlib_stub
+
+          export ZSTD=1
+          export ZSTD_PATH=zstd_stub
+
+          export BROTLI=1
+          export BROTLI_PATH=brotli_stub
+          export BROTLI_LIBS="-lbrotlidec -lbrotlicommon"
+
+          export NGHTTP2=1
+          export NGHTTP2_PATH=nghttp2_stub
+
+          export IDN2=1
+          export LIBIDN2_PATH=idn2_stub
+
+          export SSL=1
+          export OPENSSL_PATH=$build/boringssl
+          export OPENSSL_LIBPATH=$build/boringssl/lib
+          export OPENSSL_LIBS="-lssl -lcrypto"
+
+          cd $build/curl
+          cp Makefile.dist Makefile
+          mingw32-make mingw32-clean
+          mingw32-make mingw32
+
+          mkdir bin
+          mv lib/*.dll bin
+          mv lib/*.a bin
+          mv src/*.exe bin
+          bin/curl.exe -V
+          zip -r curl-win-7_84_0.zip bin/*
+          
+          #release
